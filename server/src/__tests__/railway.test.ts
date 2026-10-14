@@ -1,3 +1,4 @@
+Paperclip: GitHub capability_missing; continuing without managed credentials.
 import { describe, expect, it, vi } from "vitest";
 import { railwayCommandBudgetMs, createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, RAILWAY_API_URL, RAILWAY_MCP_URL, RAILWAY_QUERIES, RAILWAY_TOOLS, railwayRisk } from "../services/railway.js";
 import { deploymentData, instanceId, target, targetData } from "./fixtures/railway/provider.js";
@@ -74,6 +75,18 @@ describe("Railway governed operations", () => {
       expect(init.headers).toMatchObject({ Authorization: "Bearer railway-fixture-secret" });
     }
     expect(JSON.parse(String(f.request.mock.calls[2][1].body)).variables).toEqual({ deploymentId: target.deploymentId });
+  });
+
+  it("reads an exact deployment through its own membership without the service instance query", async () => {
+    const f = fixture();
+    await expect(f.client.call("paperclip-railway-deployment-status", target)).resolves.toEqual(deploymentData.deployment);
+    expect(f.request.mock.calls.map(([, init]) => JSON.parse(String(init.body)).query)).toEqual([RAILWAY_QUERIES.deployment]);
+
+    const mismatch = fixture((query) => query === RAILWAY_QUERIES.deployment
+      ? Response.json({ data: { deployment: { ...deploymentData.deployment, projectId: instanceId } } })
+      : undefined);
+    await expect(mismatch.client.call("paperclip-railway-deployment-status", target)).rejects.toMatchObject({ code: "railway_target_mismatch" });
+    expect(mismatch.request).toHaveBeenCalledTimes(1);
   });
 
   it.each(["project", "environment", "service", "deployment"])("denies a mismatched %s before mutation", async (field) => {

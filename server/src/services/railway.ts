@@ -1,3 +1,4 @@
+Paperclip: GitHub capability_missing; continuing without managed credentials.
 import { z } from "zod";
 import { redactSensitiveText } from "../redaction.js";
 import { initializeMcpHttpSession, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
@@ -258,6 +259,12 @@ export function createRailwayClient(options: RailwayClientOptions) {
       let result: unknown;
       if (operation === "list-projects") result = await query(RAILWAY_QUERIES.projects, args);
       else if (operation === "list-services" || operation === "list-environments") result = await query(operation === "list-services" ? RAILWAY_QUERIES.services : RAILWAY_QUERIES.environments, args);
+      else if (operation === "deployment-status") {
+        // The deployment itself carries all three membership IDs. The broader
+        // serviceInstance query is unnecessary for this exact read and can
+        // require permissions that the deployment read does not need.
+        result = await validateDeployment(args);
+      }
       else {
         const instance = await validateTarget(args);
         const deployment = args.deploymentId ? await validateDeployment(args) : null;
