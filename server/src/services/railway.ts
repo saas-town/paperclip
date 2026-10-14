@@ -1,4 +1,3 @@
-Paperclip: GitHub capability_missing; continuing without managed credentials.
 import { z } from "zod";
 import { redactSensitiveText } from "../redaction.js";
 import { initializeMcpHttpSession, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";

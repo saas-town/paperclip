@@ -1,4 +1,3 @@
-Paperclip: GitHub capability_missing; continuing without managed credentials.
 import { describe, expect, it, vi } from "vitest";
 import { railwayCommandBudgetMs, createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, RAILWAY_API_URL, RAILWAY_MCP_URL, RAILWAY_QUERIES, RAILWAY_TOOLS, railwayRisk } from "../services/railway.js";
 import { deploymentData, instanceId, target, targetData } from "./fixtures/railway/provider.js";
