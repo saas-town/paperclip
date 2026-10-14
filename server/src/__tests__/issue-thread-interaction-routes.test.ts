@@ -1279,6 +1279,46 @@ describe("issue thread interaction routes", () => {
     );
   });
 
+  it("preserves gateway errors when a tool-action confirmation cannot execute", async () => {
+    const { ToolGatewayHttpError } = await import("../services/tool-gateway.js");
+    const approveToolActionRequest = vi.fn().mockRejectedValue(
+      new ToolGatewayHttpError(
+        409,
+        "Tool action request requires formal board approval before execution",
+        "formal_approval_required",
+        { approvalId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+      ),
+    );
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-tool-action-stale",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+      payload: {
+        version: 1,
+        prompt: "Approve the action?",
+        toolAction: {
+          version: 1,
+          actionRequestId: "action-request-stale",
+          toolName: "stripe_api_write",
+        },
+      },
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action-stale/accept")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Tool action request requires formal board approval before execution",
+      code: "formal_approval_required",
+      details: { code: "formal_approval_required", approvalId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    });
+  });
+
   it("wakes with failure instructions after an accepted tool action fails", async () => {
     const approveToolActionRequest = vi.fn().mockResolvedValue({
       status: "failed",

@@ -344,14 +344,18 @@ export interface ToolGatewaySession {
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
 
-export class ToolGatewayHttpError extends Error {
+export class ToolGatewayHttpError extends HttpError {
+  public override details: Record<string, unknown>;
+
   constructor(
-    public readonly status: number,
+    status: number,
     message: string,
     public readonly reasonCode: string,
-    public readonly details: Record<string, unknown> = {},
+    details: Record<string, unknown> = {},
   ) {
-    super(message);
+    const responseDetails = { code: reasonCode, ...details };
+    super(status, message, responseDetails);
+    this.details = responseDetails;
   }
 }
 

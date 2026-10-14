@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "../api/client";
 import {
   describeInteractionResolutionFailure,
+  interactionRequiredApprovalHref,
   interactionResolutionErrorCode,
   interactionResolutionErrorMessage,
   isInteractionAudienceDenial,
@@ -161,5 +162,25 @@ describe("describeInteractionResolutionFailure", () => {
     expect(
       interactionResolutionErrorMessage(denial(403, "interaction_human_only", "Agents cannot resolve this."), null),
     ).toBe("Agents cannot resolve this.");
+  });
+});
+
+
+describe("required formal approval", () => {
+  it("names the prerequisite without suggesting another failed retry", () => {
+    const error = denial(409, "formal_approval_required", "Formal approval required");
+    expect(describeInteractionResolutionFailure(error).kind).toBe("approval_required");
+    expect(interactionResolutionErrorMessage(error)).not.toContain("Try again");
+  });
+
+  it("links only validated local approval IDs", () => {
+    const error = (id: unknown) => new ApiError("Approval required", 409, {
+      code: "formal_approval_required", details: { approvalId: id },
+    });
+    expect(interactionRequiredApprovalHref(error("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")))
+      .toBe("/approvals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    expect(interactionRequiredApprovalHref(error("https://example.com"))).toBeNull();
+    expect(interactionRequiredApprovalHref(error(undefined))).toBeNull();
+    expect(interactionRequiredApprovalHref(new Error("network"))).toBeNull();
   });
 });

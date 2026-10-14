@@ -1197,6 +1197,21 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(approve?.getAttribute("data-variant")).toBe("destructive");
   });
 
+  it("links to the formal approval when the server requires it", async () => {
+    const accept = vi.fn().mockRejectedValue(new ApiError("Formal approval required", 409, {
+      code: "formal_approval_required",
+      details: { approvalId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    }));
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: accept });
+    const approve = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run");
+    await act(async () => { approve?.click(); });
+    expect(host.textContent).toContain("This action needs board approval");
+    expect(host.textContent).not.toContain("Try again");
+    expect(host.querySelector('a[href="/approvals/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]')?.textContent)
+      .toBe("Open required approval");
+    expect(accept).toHaveBeenCalledTimes(1);
+  });
+
   it("declines in one click without an optional reason form", async () => {
     const reject = vi.fn();
     const host = renderCard({ interaction: pendingToolActionWriteInteraction, onRejectInteraction: reject });

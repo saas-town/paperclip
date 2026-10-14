@@ -41,7 +41,7 @@ const INTERACTION_SETTLED_CODES = [
   "interaction_issue_closed",
 ] as const;
 
-export type InteractionResolutionFailureKind = "audience_denied" | "settled" | "transient";
+export type InteractionResolutionFailureKind = "audience_denied" | "settled" | "approval_required" | "transient";
 
 export interface InteractionResolutionFailure {
   kind: InteractionResolutionFailureKind;
@@ -64,6 +64,16 @@ export function interactionResolutionErrorCode(error: unknown): string | null {
   if (typeof body.code === "string" && body.code) return body.code;
   const details = record(body.details);
   return typeof details?.code === "string" && details.code ? details.code : null;
+}
+
+/** Only server-issued approval IDs can become local navigation targets. */
+export function interactionRequiredApprovalHref(error: unknown): string | null {
+  if (interactionResolutionErrorCode(error) !== "formal_approval_required") return null;
+  const details = record(record(record(error)?.body)?.details);
+  const id = details?.approvalId;
+  return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+    ? `/approvals/${id}`
+    : null;
 }
 
 function errorStatus(error: unknown): number | null {
@@ -109,6 +119,14 @@ export function describeInteractionResolutionFailure(
 ): InteractionResolutionFailure {
   const code = interactionResolutionErrorCode(error);
   const reason = serverReason(error);
+
+  if (code === "formal_approval_required") {
+    return {
+      kind: "approval_required",
+      code,
+      message: "This action needs board approval. Open the required approval, then return here to run the action.",
+    };
+  }
 
   if (isInteractionAudienceDenial(error)) {
     // Only a *narrowed* audience has a responder worth naming. Appending the

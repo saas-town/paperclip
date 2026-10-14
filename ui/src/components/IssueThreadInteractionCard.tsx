@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, Che
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { interactionRequiredApprovalHref, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
   isInteractionPreparingApproval,
   buildSuggestedTaskTree,
@@ -1753,6 +1753,7 @@ function RequestToolActionCard({
   const payload = interaction.payload.toolAction!;
   const [working, setWorking] = useState<"accept" | "always" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [requiredApprovalHref, setRequiredApprovalHref] = useState<string | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
   const isPending = state === "pending";
   const variant = payload.risk === "destructive" ? "destructive" : "cta";
@@ -1764,11 +1765,13 @@ function RequestToolActionCard({
   async function decide(decision: "accept" | "always" | "reject") {
     setWorking(decision);
     setActionError(null);
+    setRequiredApprovalHref(null);
     try {
       if (decision === "reject") await onRejectInteraction?.(interaction);
       else await onAcceptInteraction?.(interaction, undefined, undefined, decision === "always");
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
+      setRequiredApprovalHref(interactionRequiredApprovalHref(error));
     } finally {
       setWorking(null);
     }
@@ -1812,6 +1815,11 @@ function RequestToolActionCard({
         </div>
       ) : null}
       <InteractionActionError message={actionError} />
+      {isPending && requiredApprovalHref ? (
+        <Button size="sm" variant="outline" asChild>
+          <Link to={requiredApprovalHref}>Open required approval</Link>
+        </Button>
+      ) : null}
     </div>
   );
 }
