@@ -30,6 +30,9 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
       pendingSelection: result.pendingSelection, cwd: input.workspaceRoot ?? null,
       workspace: workspace ? { id: workspace.id, projectId: workspace.projectId, mode: workspace.mode, status: workspace.status } : null,
       repositories: (result.repositories ?? []).map(repositoryView),
+      retainedFiles: (result.retainedFiles ?? []).map((files: Record<string, unknown>) => ({
+        workspaceId: files.workspaceId, available: files.available, entries: files.entries, truncated: files.truncated,
+      })),
       capabilities: result.capabilities, fileLocations: result.fileLocations };
   }
   return result;

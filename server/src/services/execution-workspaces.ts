@@ -1,3 +1,4 @@
+import { assertNoUnfinishedWorkspaceConsumers, lockWorkspaceLifecycle, RETAINED_TASK_FILES_KEY } from "./workspace-consumers.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
@@ -244,9 +245,7 @@ async function acquireExecutionWorkspaceLifecycleLock(
   tx: DbTransaction,
   workspaceId: string,
 ): Promise<void> {
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
-  );
+  await lockWorkspaceLifecycle(tx, workspaceId);
 }
 
 const workspaceSourceKeys = ["cwd", "projectId", "projectWorkspaceId", "sourceIssueId"] as const;
@@ -1422,6 +1421,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function validateSelection(input: { taskCreation?: TaskWorkspaceCreationTrustContext; companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; assigneeAdapterOverrides?: unknown; projectId?: string | null; executionPolicy?: unknown; preserveImplicitDefaultSettings?: boolean }, reader: Db | DbTransaction = db) {
     const selection = taskWorkspaceSelectionSchema.parse(input.selection);
     if (selection.kind === "existing") {
+      if (reader !== db) await lockWorkspaceLifecycle(reader as DbTransaction, selection.workspaceId);
       const [workspace] = await reader.select().from(executionWorkspaces).where(and(
         eq(executionWorkspaces.id, selection.workspaceId), eq(executionWorkspaces.companyId, input.companyId),
         taskWorkspaceSelectableCondition(),
@@ -1474,12 +1474,35 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .where(and(eq(executionWorkspaces.id, task.executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(db, actor))) : [];
     if (task.executionWorkspaceId && !workspace) throw notFound("Workspace is unavailable or inaccessible");
     if (workspace) await assertTaskWorkspaceAccess(db, actor, companyId, workspace.id);
+    const retained = await db.select().from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, companyId),
+      sql`${executionWorkspaces.metadata}->${RETAINED_TASK_FILES_KEY} ? ${issueId}`,
+      await executionWorkspaceReadSqlCondition(db, actor),
+    ));
+    const retainedFiles = await Promise.all(retained.map(async old => {
+      await assertTaskWorkspaceAccess(db, actor, companyId, old.id);
+      const receipt = parseObject(parseObject(old.metadata?.[RETAINED_TASK_FILES_KEY])[issueId]);
+      const currentCwd = old.providerRef ?? old.cwd;
+      const cwd = typeof receipt.cwd === "string" ? receipt.cwd : currentCwd;
+      // Metadata is caller-editable. A retained marker must never authorize a
+      // filesystem read outside the workspace's current registered root.
+      const entry = cwd && cwd === currentCwd ? await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }) : null;
+      const entries = cwd && entry?.isDirectory() && !entry.isSymbolicLink() ? await fs.readdir(cwd) : null;
+      return { workspaceId: old.id, cwd, available: entries !== null,
+        requestKey: receipt.requestKey, expectedBindingRevision: receipt.expectedBindingRevision,
+        entries: entries?.slice(0, 100) ?? [], truncated: (entries?.length ?? 0) > 100 };
+    }));
     return { issueId, bindingRevision: task.workspaceBindingRevision, selection: task.workspaceSelection,
-      pendingSelection: task.workspacePendingSelection, workspace: workspace ? toExecutionWorkspace(workspace) : null };
+      pendingSelection: task.workspacePendingSelection, workspace: workspace ? toExecutionWorkspace(workspace) : null,
+      retainedFiles };
   }
 
   async function selectTaskWorkspace(input: { companyId: string; issueId: string; actor: AuthorizationActor;
-    selection: TaskWorkspaceSelection; expectedBindingRevision: number; requestKey: string }) {
+    selection: TaskWorkspaceSelection; expectedBindingRevision: number; requestKey: string;
+    retainCurrentFiles?: boolean }) {
     return db.transaction(async tx => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
         await issueReadSqlCondition(tx, input.actor))).for("update");
@@ -1505,12 +1528,76 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
       if (task.workspaceBindingRevision !== input.expectedBindingRevision) throw conflict("Task workspace binding changed; inspect it before selecting again");
       await validateSelection(input, tx);
+      if (input.retainCurrentFiles) {
+        if (!task.executionWorkspaceId) throw conflict("Task has no workspace to recover");
+        await lockWorkspaceLifecycle(tx, task.executionWorkspaceId);
+        const [old] = await tx.select().from(executionWorkspaces).where(and(
+          eq(executionWorkspaces.id, task.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId),
+        )).for("no key update");
+        if (!old || old.mode !== "isolated_workspace" || (old.providerType !== "git_worktree" && old.strategyType !== "git_worktree")) throw conflict("Only a retained Git worktree can use fresh-workspace recovery");
+        if (input.selection.kind !== "configured_source" || input.selection.projectWorkspaceId !== old.projectWorkspaceId) {
+          throw conflict("Original workspace source changed; inspect the task before recovering it");
+        }
+        await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, old.id);
+        await tx.update(executionWorkspaces).set({ metadata: { ...old.metadata,
+          [RETAINED_TASK_FILES_KEY]: { ...parseObject(old.metadata?.[RETAINED_TASK_FILES_KEY]),
+            [task.id]: { retainedAt: new Date().toISOString(), requestKey: input.requestKey,
+              cwd: old.providerRef ?? old.cwd, expectedBindingRevision: input.expectedBindingRevision } },
+        }, updatedAt: new Date() }).where(eq(executionWorkspaces.id, old.id));
+      }
       const intent: TaskWorkspaceIntent = { version: 1, request: { key: input.requestKey, expectedBindingRevision: input.expectedBindingRevision }, selection: input.selection, source: "explicit" };
       const nextRevision = task.workspaceBindingRevision + 1;
       await tx.update(issues).set({ workspaceBindingRevision: nextRevision,
         workspacePendingSelection: { version: 1, requestKey: input.requestKey,
           expectedBindingRevision: nextRevision, intent }, updatedAt: new Date() }).where(eq(issues.id, task.id));
       return { kind: "scheduled" as const, applies: "next_normal_admission" as const, bindingRevision: nextRevision };
+    });
+  }
+
+  async function recoverTaskWorkspace(input: { companyId: string; issueId: string; actor: AuthorizationActor;
+    expectedBindingRevision: number; requestKey: string }) {
+    const view = await inspectTaskWorkspace(input.companyId, input.issueId, input.actor);
+    const receipt = view.retainedFiles.find(files => files.requestKey === input.requestKey);
+    if (receipt) {
+      if (receipt.expectedBindingRevision !== input.expectedBindingRevision) throw conflict("Workspace recovery request key was already used for different intent");
+      if (view.pendingSelection?.requestKey === input.requestKey) return { kind: "scheduled" as const,
+        applies: "next_normal_admission" as const, bindingRevision: view.bindingRevision,
+        retainedWorkspaceId: receipt.workspaceId, retainedPath: receipt.cwd };
+      if (view.selection?.request?.key === input.requestKey) return { kind: "applied" as const,
+        bindingRevision: view.bindingRevision, retainedWorkspaceId: receipt.workspaceId, retainedPath: receipt.cwd };
+      throw conflict("Workspace recovery request was superseded; inspect the task before selecting again");
+    }
+    const workspace = view.workspace;
+    if (!workspace?.projectWorkspaceId || workspace.mode !== "isolated_workspace"
+      || (workspace.providerType !== "git_worktree" && workspace.strategyType !== "git_worktree")) {
+      throw conflict("The task needs an original configured Git source before a fresh workspace can be selected");
+    }
+    const result = await selectTaskWorkspace({ ...input, retainCurrentFiles: true,
+      selection: { kind: "configured_source", projectWorkspaceId: workspace.projectWorkspaceId, mode: "managed_isolated" } });
+    return { ...result, retainedWorkspaceId: workspace.id,
+      retainedPath: workspace.providerRef ?? workspace.cwd };
+  }
+
+  async function releaseRetainedTaskFiles(input: { companyId: string; issueId: string; workspaceId: string;
+    requestKey: string; actor: AuthorizationActor }) {
+    return db.transaction(async tx => {
+      await lockWorkspaceLifecycle(tx, input.workspaceId);
+      const [workspace] = await tx.select().from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.id, input.workspaceId), eq(executionWorkspaces.companyId, input.companyId),
+        await executionWorkspaceReadSqlCondition(tx, input.actor),
+      )).for("no key update");
+      if (!workspace) throw notFound("Retained workspace not found");
+      await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, workspace.id, { write: true, issueId: input.issueId });
+      const retained = parseObject(workspace.metadata?.[RETAINED_TASK_FILES_KEY]);
+      const receipt = parseObject(retained[input.issueId]);
+      if (!Object.keys(receipt).length) return { released: true };
+      if (receipt.requestKey !== input.requestKey) throw conflict("Retained files changed; inspect the task before releasing them");
+      delete retained[input.issueId];
+      const metadata = { ...workspace.metadata };
+      if (Object.keys(retained).length) metadata[RETAINED_TASK_FILES_KEY] = retained;
+      else delete metadata[RETAINED_TASK_FILES_KEY];
+      await tx.update(executionWorkspaces).set({ metadata, updatedAt: new Date() }).where(eq(executionWorkspaces.id, workspace.id));
+      return { released: true };
     });
   }
 
@@ -1539,8 +1626,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
     return db.transaction(async tx => {
       const [task] = await measureRunPhase("workspace.row_lock", () => tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("no key update"));
+      await lockWorkspaceLifecycle(tx, workspaceId);
       const [workspace] = await measureRunPhase("workspace.row_lock", () => tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, companyId))).for("no key update"));
       if (!task || !workspace) throw notFound("Task workspace unavailable");
+      if (isClosedExecutionWorkspaceStatus(workspace.status)) throw conflict("Task workspace was closed; select or recover a workspace before binding it");
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata,
         _issuePrivacySources: { ...(workspace.metadata?._issuePrivacySources as Record<string, unknown> ?? {}), [task.id]: true } } }).where(eq(executionWorkspaces.id, workspaceId));
       const nextRevision = task.workspaceBindingRevision + (task.executionWorkspaceId === workspaceId ? 0 : 1);
@@ -2027,6 +2116,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // heartbeat run works on the tree or the workspace, and no runtime service
   // still runs from the worktree.
   async function terminalWorkspaceCompactionGuardPasses(tx: DbTransaction, workspace: ExecutionWorkspaceRow) {
+    try { await assertNoUnfinishedWorkspaceConsumers(tx, workspace, { destructive: false }); }
+    catch (error) { if ((error as { status?: number }).status === 409) return false; throw error; }
     const rows = await tx.execute<{ allowed: boolean }>(sql`
       WITH RECURSIVE issue_tree(id, status) AS (
         SELECT root.id, root.status
@@ -2245,7 +2336,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         message: "execution workspace cleanup skipped because it was reopened",
       },
       onSkip: () => ({ cleaned: false, warnings: [], skippedReopened: true }),
-      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha),
+      write: async ({ tx }) => {
+        const [fresh] = await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+        if (!fresh) throw notFound("Execution workspace not found");
+        await assertNoUnfinishedWorkspaceConsumers(tx, fresh);
+        return runTerminalWorkspaceCleanup(workspace, expectedHeadSha);
+      },
     });
   }
 
@@ -2429,7 +2525,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     guardTaskRepositoryRootForPublication: executionWorkspaceRepositoryService(db).guardForPublication,
     prepareConfiguredRepositorySource: executionWorkspaceRepositoryService(db).prepareConfiguredRepositorySource,
     reserveTaskRepositoryRootForRecovery: executionWorkspaceRepositoryService(db).reserveForRecovery,
-    resolveSourceWorkspaceStrategy, validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
+    resolveSourceWorkspaceStrategy, validateSelection, inspectTaskWorkspace, selectTaskWorkspace, recoverTaskWorkspace, releaseRetainedTaskFiles, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
@@ -2916,6 +3012,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      try { await assertNoUnfinishedWorkspaceConsumers(db, workspace); }
+      catch (error) {
+        if ((error as { status?: number }).status !== 409) throw error;
+        if (!linkedIssues.some(issue => !TERMINAL_ISSUE_STATUSES.has(issue.status))) blockingReasons.push((error as Error).message);
+      }
       if (!statusInspectionSucceeded) {
         blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
       }
@@ -4158,6 +4259,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // rebuilt worktree. The route maps this to HTTP 409.
           return { outcome: "reopen_pending" };
         }
+        await assertNoUnfinishedWorkspaceConsumers(tx, fresh);
         const nextPatch = await measureRunPhase("workspace.provenance", () => preserveWorkspaceOwnershipForPatch(tx, fresh, input.patch));
         const baseMetadata =
           (nextPatch.metadata as Record<string, unknown> | null | undefined)
@@ -4269,7 +4371,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           message: "execution workspace cleanup skipped because it was reopened",
         },
         onSkip: () => ({ skippedReopened: true as const }),
-        write: async () => ({ skippedReopened: false as const, result: await input.destroy() }),
+        write: async ({ tx }) => {
+          const [workspace] = await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, input.workspaceId));
+          if (!workspace) throw notFound("Execution workspace not found");
+          await assertNoUnfinishedWorkspaceConsumers(tx, workspace);
+          return { skippedReopened: false as const, result: await input.destroy() };
+        },
       });
     },
 

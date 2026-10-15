@@ -2229,6 +2229,17 @@ Agents inspect/select workspaces and request contained repository preparation th
 
 See [the layer architecture](plans/2026-10-09-task-workspaces.md) for resolution rules, module ownership, persistence versions, rollout, and verification.
 
+An isolated workspace cannot be archived or destroyed while an unfinished task
+or pending reuse selection consumes it. Binding and destructive cleanup share
+the workspace lifecycle lock. This protection includes children of completed
+parents and consumers outside the original issue tree.
+
+A task can request fresh-worktree recovery from its original configured source.
+The request uses binding revision and request-key checks, retains the old files,
+and applies only at the next normal admission after existing work settles.
+Workspace inspection surfaces retained files. Recovery does not start a run,
+interrupt a provider, or infer authority to read arbitrary paths from metadata.
+
 ## Company fast-response service
 
 Companies may configure an optional shared API connection and model for short acknowledgements of accepted human turns. Fast responses use direct SDK inference alongside normal agent work, with a three-second admission deadline, bounded prompts/output, current authorization and independent `fast_response` accounting. They are server-marked platform receipts attributed to the agent, never completion, interaction or recovery evidence. Company-sponsored unlinked external senders are explicit; linked-user permission denials are never bypassed. See [fast-responses.md](fast-responses.md) for provider, delivery, history and endpoint contracts.
@@ -2243,6 +2254,7 @@ including its immutable source versions and an empty inventory. Revocation and
 version changes select a separate home and session store while retaining the
 selected model account’s credential source. Repository skill auto-update trusts
 its upstream authors; operators can pause updates to review changes manually.
+
 
 ### Task collection creation visibility (2026-10-13)
 

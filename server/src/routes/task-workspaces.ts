@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { issues, type Db } from "@paperclipai/db";
 import { Router, type Request } from "express";
-import { prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema } from "@paperclipai/shared";
+import { prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema, recoverTaskWorkspaceSchema, releaseRetainedTaskFilesSchema } from "@paperclipai/shared";
 import { accessService } from "../services/access.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { canActorReadExecutionWorkspace, issueReadSqlCondition } from "../services/authorization.js";
@@ -34,13 +34,28 @@ export function taskWorkspaceRoutes(db: Db) {
   router.get("/issues/:id/workspace", async (req, res) => {
     const issue = await task(req);
     const view = await workspaces.inspectTaskWorkspace(issue.companyId, issue.id, req.actor);
-    res.json({ ...view, repositories: issue.executionWorkspaceId ? await workspaces.listTaskRepositories(issue.companyId, issue.executionWorkspaceId) : [], capabilities: { prepareRepository: "next_normal_admission", selectWorkspace: "next_normal_admission" }, fileLocations: { taskFiles: "workspace", personalInstructionsAndMemory: "AGENT_HOME", providerHome: "runtime_managed" } });
+    res.json({ ...view, repositories: issue.executionWorkspaceId ? await workspaces.listTaskRepositories(issue.companyId, issue.executionWorkspaceId) : [], capabilities: { prepareRepository: "next_normal_admission", selectWorkspace: "next_normal_admission", recoverWorkspace: "next_normal_admission" }, fileLocations: { taskFiles: "workspace", personalInstructionsAndMemory: "AGENT_HOME", providerHome: "runtime_managed" } });
   });
   router.put("/issues/:id/workspace", validate(selectTaskWorkspaceSchema), async (req, res) => {
     const issue = await task(req, true);
     const result = await workspaces.selectTaskWorkspace({ companyId: issue.companyId, issueId: issue.id, actor: req.actor, ...req.body });
     const actor = getActorInfo(req);
     await logActivity(db, { companyId: issue.companyId, ...actor, action: "issue.workspace.selection_requested", entityType: "issue", entityId: issue.id, details: { selection: req.body.selection, applies: "next_normal_admission" } });
+    res.json(result);
+  });
+  router.post("/issues/:id/workspace/recover", validate(recoverTaskWorkspaceSchema), async (req, res) => {
+    const issue = await task(req, true);
+    const result = await workspaces.recoverTaskWorkspace({ companyId: issue.companyId, issueId: issue.id, actor: req.actor, ...req.body });
+    await logActivity(db, { companyId: issue.companyId, ...getActorInfo(req), action: "issue.workspace.recovery_requested",
+      entityType: "issue", entityId: issue.id, details: { ...result, applies: "next_normal_admission" } });
+    res.json(result);
+  });
+  router.delete("/issues/:id/workspace/retained-files/:workspaceId", validate(releaseRetainedTaskFilesSchema), async (req, res) => {
+    const issue = await task(req, true);
+    const result = await workspaces.releaseRetainedTaskFiles({ companyId: issue.companyId, issueId: issue.id,
+      workspaceId: req.params.workspaceId as string, actor: req.actor, ...req.body });
+    await logActivity(db, { companyId: issue.companyId, ...getActorInfo(req), action: "issue.workspace.retained_files_released",
+      entityType: "issue", entityId: issue.id, details: { workspaceId: req.params.workspaceId } });
     res.json(result);
   });
   router.post("/issues/:id/workspace/repositories", validate(prepareWorkspaceRepositorySchema), async (req, res) => {

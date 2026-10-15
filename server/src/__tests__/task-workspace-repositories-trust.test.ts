@@ -122,6 +122,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const patch = { cwd: moved, projectId: null, sourceIssueId: null, metadata: {} };
     const svc = executionWorkspaceService(db);
     if (operation === "archive") {
+      // Archive now requires every bound consumer to finish. Keep this test
+      // focused on preservation of private publisher provenance after closure.
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
       const result = await svc.archiveWorkspaceUnderLifecycleLock({ id: f.workspace.id, patch, closedAt: new Date() });
       expect(result?.outcome).toBe("archived");
       if (result?.outcome === "archived") {

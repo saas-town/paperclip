@@ -78,6 +78,8 @@ import {
   upsertIssueWatchdogSchema,
   runnerGoalActionRequestSchema,
   selectTaskWorkspaceSchema,
+  recoverTaskWorkspaceSchema,
+  releaseRetainedTaskFilesSchema,
   prepareWorkspaceRepositorySchema,
   // Project
   createProjectSchema,
@@ -4371,6 +4373,26 @@ registry.registerPath({
   summary: "Select a task workspace for the next normal admission",
   description: "Records workspace intent without restarting active work or changing the task's organizational project. Agents may select only for their bound task.",
   request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(selectTaskWorkspaceSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/workspace/recover",
+  tags: ["issues"],
+  summary: "Select a fresh task worktree while preserving files at the old path",
+  description: "Schedules a fresh isolated workspace from the original configured source for the next normal admission. Retained files remain visible through task workspace inspection. This request does not interrupt or dispatch an agent. Task mutation authority and agent task/run scope still apply.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(recoverTaskWorkspaceSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/workspace/retained-files/{workspaceId}",
+  tags: ["issues"],
+  summary: "Release an old workspace's file retention after preserving its files",
+  description: "Clears only the named task's matching recovery receipt. Requires task mutation and write access to the retained workspace. Does not delete files or dispatch an agent.",
+  request: { params: z.object({ id: z.string().uuid(), workspaceId: z.string().uuid() }), body: jsonBody(releaseRetainedTaskFilesSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

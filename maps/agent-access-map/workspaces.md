@@ -233,5 +233,20 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Fresh-workspace recovery is available through
+`POST /api/issues/{id}/workspace/recover`. It uses task mutation authorization,
+current source visibility, company scope, and an owned active task context for
+agent callers. It can queue a request during a run, but normal admission refuses
+to replace the binding while an agent or unresolved recovery owns it. Binding revisions and request keys fence the request. The next normal
+admission creates the new workspace; the endpoint does not dispatch a run.
+`DELETE /api/issues/{id}/workspace/retained-files/{workspaceId}` releases only a
+matching task recovery receipt after file preservation. It also requires write
+access to the old workspace; ordinary task mutation alone does not grant it.
+Task workspace inspection surfaces retained file names and the old workspace ID.
+The native read tool omits controller host paths. Authorized legacy agents can
+use REST; a dedicated native recovery tool and UI control are not added here.
+Automated source-level coverage exercises the board API and retention boundaries;
+live agent recovery access is not yet qualified.
+
 Gaps: Closure/readiness exists; not every workspace can be reopened, and branch
 reconciliation has a board boundary.

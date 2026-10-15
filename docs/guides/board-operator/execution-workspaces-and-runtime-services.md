@@ -49,11 +49,56 @@ Issues are attached to execution workspace behavior, not to automatic runtime ma
 
 ## Execution workspace lifecycle
 
-Execution workspaces are durable until a human closes them.
+Execution workspaces persist across runs. Operators can close them, and automatic
+cleanup can close eligible completed workspaces.
 
 - The UI can archive an execution workspace.
 - Closing an execution workspace stops its runtime services and cleans up its workspace artifacts when allowed.
 - Shared workspaces that point at the project primary checkout are treated more conservatively during cleanup than disposable isolated workspaces.
+
+### Parent and child retention
+
+An isolated workspace stays available while an unfinished task is bound to it.
+This includes children whose parent has completed, tasks outside the original
+parent tree, and pending requests to reuse the workspace. Archive and deletion
+recheck these consumers under the workspace lifecycle lock. New bindings use
+the same lock and cannot attach to a closed workspace.
+
+These protections cover Paperclip cleanup. They cannot prevent a person or an
+external command from removing a Git worktree directly.
+
+### Move a task after its original worktree is lost
+
+`GET /api/issues/:id/workspace` returns the current `bindingRevision`.
+An authorized operator can request a fresh isolated workspace from the original
+configured project source:
+
+```http
+POST /api/issues/:id/workspace/recover
+Content-Type: application/json
+
+{"expectedBindingRevision": 3, "requestKey": "recover-qa-files"}
+```
+
+The request schedules a workspace selection for the next normal admission.
+It does not start an agent, interrupt a run, choose another repository, or erase
+the old path. A running agent or unresolved workspace persistence keeps its
+current binding until that work settles. Repeating the same request key and revision returns the saved result.
+A stale revision or reused key with different intent returns a conflict.
+
+The workspace inspection response lists `retainedFiles`, including the old
+workspace ID, path, availability, and up to 100 top-level entry names. The agent
+workspace tool also lists the retained entries, without controller host paths.
+The old workspace remains protected from cleanup while it retains those files.
+A fresh workspace does not imply that old files were copied into it.
+
+After preserving or deliberately discarding the old files, release the retention
+with `DELETE /api/issues/:id/workspace/retained-files/:workspaceId` and a JSON body
+containing the recovery `requestKey`. This needs write access to the old workspace
+as well as task mutation authority. It releases only that task's matching hold;
+a stale key cannot release a newer hold. The request does not delete files.
+Normal Git, delivery, and consumer checks still govern later cleanup. Regenerable
+cache compaction does not need this release when all its other guards pass.
 
 ## Resolved workspace logic during heartbeat runs
 

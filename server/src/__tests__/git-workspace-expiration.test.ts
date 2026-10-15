@@ -29,6 +29,9 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
   const previousHome = process.env.PAPERCLIP_HOME;
   const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
+    // Reopen loads heartbeat on demand. Prepare that large module graph outside
+    // the behavior timeout, as cold transforms can exceed it on a busy host.
+    await import("../services/heartbeat.js");
     database = await startEmbeddedPostgresTestDatabase("git-cache-expiration-");
     db = createDb(database.connectionString);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-expiration-"));

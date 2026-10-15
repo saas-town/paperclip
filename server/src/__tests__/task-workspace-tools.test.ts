@@ -26,4 +26,13 @@ describe("task workspace semantic transport", () => {
     await expect(callTaskWorkspaceTool({ ...base, name: "prepare_repository", arguments: { ...args, cwd: "/home" } })).rejects.toThrow();
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it("surfaces retained files without exposing controller filesystem paths to a remote agent", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ issueId: "task", bindingRevision: 4,
+      retainedFiles: [{ workspaceId: "old", cwd: "/private/controller/old", available: true,
+        entries: ["walk.cjs"], truncated: false }], repositories: [] })));
+    const result = await callTaskWorkspaceTool({ ...base, name: "get_workspace", arguments: {} });
+    expect(result.retainedFiles).toEqual([{ workspaceId: "old", available: true, entries: ["walk.cjs"], truncated: false }]);
+    expect(JSON.stringify(result)).not.toContain("/private/controller");
+  });
+
 });

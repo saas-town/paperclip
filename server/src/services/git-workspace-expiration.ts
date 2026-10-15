@@ -1,3 +1,4 @@
+import { assertNoUnfinishedWorkspaceConsumers } from "./workspace-consumers.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, ne, sql } from "drizzle-orm";
@@ -32,6 +33,8 @@ export type GitExpirationResult = { candidate: boolean; expired: boolean; reclai
 /** Re-read the whole tree and every runtime/recovery consumer immediately before deletion. */
 async function eligible(tx: Tx, workspace: Workspace, now: Date) {
   if (workspace.metadata?.reopenPendingConsumption === true) return false;
+  try { await assertNoUnfinishedWorkspaceConsumers(tx, workspace); }
+  catch (error) { if ((error as { status?: number }).status === 409) return false; throw error; }
   const rows = await tx.execute<{ allowed: boolean }>(sql`
     WITH RECURSIVE tree AS (
       SELECT id, status, completed_at, cancelled_at, updated_at FROM ${issues}
