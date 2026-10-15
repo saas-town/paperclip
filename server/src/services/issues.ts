@@ -1,3 +1,4 @@
+import { lockWorkspaceLifecycle } from "./workspace-consumers.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, touchedByUserCondition } from "./issue-participation.js";
@@ -7239,10 +7240,13 @@ export function issueService(db: Db) {
     projectId: string | null | undefined,
     executionWorkspaceId: string,
     dbOrTx: DbReader = db,
+    allowExistingClosedBinding = false,
   ) {
+    if (dbOrTx !== db) await lockWorkspaceLifecycle(dbOrTx as Parameters<typeof lockWorkspaceLifecycle>[0], executionWorkspaceId);
     const workspace = await dbOrTx
       .select({
         id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
         companyId: executionWorkspaces.companyId,
         projectId: executionWorkspaces.projectId,
         projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
@@ -7253,6 +7257,9 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Execution workspace not found");
     if (workspace.companyId !== companyId)
       throw unprocessable("Execution workspace must belong to same company");
+    if (!allowExistingClosedBinding && ["archived", "cleanup_failed"].includes(workspace.status)) {
+      throw conflict("Execution workspace was closed; select a fresh workspace before binding unfinished work");
+    }
     return workspace;
   }
 
@@ -11040,7 +11047,8 @@ export function issueService(db: Db) {
           : null;
       }
       if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
-      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId,
+        db, nextExecutionWorkspaceId === existing.executionWorkspaceId);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined

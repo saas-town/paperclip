@@ -2244,6 +2244,17 @@ version changes select a separate home and session store while retaining the
 selected model account’s credential source. Repository skill auto-update trusts
 its upstream authors; operators can pause updates to review changes manually.
 
+An isolated workspace cannot be archived or destroyed while an unfinished task
+or pending reuse selection consumes it. Binding and destructive cleanup share
+the workspace lifecycle lock. This protection includes children of completed
+parents and consumers outside the original issue tree.
+
+A task can request fresh-worktree recovery from its original configured source.
+The request uses binding revision and request-key checks, retains the old files,
+and applies only at the next normal admission after existing work settles.
+Workspace inspection surfaces retained files. Recovery does not start a run,
+interrupt a provider, or infer authority to read arbitrary paths from metadata.
+
 ### Task collection creation visibility (2026-10-13)
 
 Tasks and project collections default to hiding agent/system-created tasks and

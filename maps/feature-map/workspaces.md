@@ -113,6 +113,17 @@ Automated: [workspace detail](../../ui/src/pages/ExecutionWorkspaceDetail.test.t
 
 Manual: Provision a disposable workspace, wait for readiness, start an available service, open its endpoint, and inspect a real response and logs. Stop it and verify it actually stops. Exercise close/reopen only after inspecting pending changes and active runs.
 
+For parent/child lifetime, bind an unfinished child to its completed parent's
+workspace and attempt closure. Paperclip must refuse archive and recheck before
+destruction. If an external command already removed the worktree, request
+`POST /api/issues/{id}/workspace/recover` with the current binding revision and a
+request key. Verify that the next normal admission uses a fresh isolated workspace
+from the original configured source. Inspect `retainedFiles` for the old QA files;
+recovery must preserve that path and must not interrupt a running agent. The
+[lifecycle regressions](../../server/src/__tests__/workspace-lifecycle-consumers.test.ts)
+use real PostgreSQL and Git fixtures. This API path does not add a recovery button
+or qualify a live provider run.
+
 ## Gotchas
 
 - UI visibility, default isolation policy, the local environment row, a workspace

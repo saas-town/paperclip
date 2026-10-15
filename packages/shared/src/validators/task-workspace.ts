@@ -13,3 +13,12 @@ export const selectTaskWorkspaceSchema = z.object({
   expectedBindingRevision: z.number().int().nonnegative(),
   requestKey: z.string().trim().min(1).max(200),
 }).strict();
+
+export const recoverTaskWorkspaceSchema = z.object({
+  expectedBindingRevision: z.number().int().nonnegative(),
+  requestKey: z.string().trim().min(1).max(200),
+}).strict();
+
+export const releaseRetainedTaskFilesSchema = z.object({
+  requestKey: z.string().trim().min(1).max(200),
+}).strict();
