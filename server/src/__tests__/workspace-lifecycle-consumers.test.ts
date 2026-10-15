@@ -10,12 +10,14 @@ import request from "supertest";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { realizeExecutionWorkspace } from "../services/workspace-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { assertNoUnfinishedWorkspaceConsumers, RETAINED_TASK_FILES_KEY } from "../services/workspace-consumers.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { issueService } from "../services/issues.js";
+import { assertNoUnfinishedWorkspaceConsumers, lockWorkspaceLifecycle, RETAINED_TASK_FILES_KEY } from "../services/workspace-consumers.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -27,6 +29,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-workspace-consumers-");
     db = createDb(temporary.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { for (const root of roots) await fs.rm(root, { recursive: true, force: true }); await temporary?.cleanup(); });
 
@@ -164,6 +167,55 @@ const support = await getEmbeddedPostgresTestSupport();
     const [next] = await db.insert(issues).values({ companyId: f.companyId, parentId: f.parentId, title: "Later QA" }).returning();
     await expect(f.service.bindTaskWorkspace(f.companyId, next.id, f.workspaceId)).rejects.toThrow("closed");
     expect((await db.select().from(issues).where(eq(issues.id, next.id)))[0].executionWorkspaceId).toBeNull();
+  });
+
+  it.each(["new binding", "existing binding reopen"])("serializes legacy PATCH %s with workspace destruction", async kind => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.childId));
+    const target = kind === "new binding"
+      ? (await db.insert(issues).values({ companyId: f.companyId, title: "Late consumer" }).returning())[0]
+      : (await db.select().from(issues).where(eq(issues.id, f.childId)))[0];
+    let locked!: () => void, release!: () => void;
+    const lockHeld = new Promise<void>(resolve => { locked = resolve; });
+    const releaseCleanup = new Promise<void>(resolve => { release = resolve; });
+    const cleanup = db.transaction(async tx => {
+      await lockWorkspaceLifecycle(tx, f.workspaceId);
+      await assertNoUnfinishedWorkspaceConsumers(tx, f.workspace);
+      await tx.update(executionWorkspaces).set({ status: "archived" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      locked();
+      await releaseCleanup;
+    });
+    await lockHeld;
+    let settled = false;
+    const update = issueService(db).update(target.id, kind === "new binding"
+      ? { executionWorkspaceId: f.workspaceId } : { status: "todo" })
+      .then(value => ({ value, error: null as Error | null }), error => ({ value: null, error: error as Error }))
+      .finally(() => { settled = true; });
+    try {
+      let waiting = false;
+      const deadline = Date.now() + 5000;
+      while (!waiting && !settled && Date.now() < deadline) {
+        const rows = await db.execute<{ waiting: boolean }>(sql`select exists (
+          select 1 from pg_locks where locktype = 'advisory' and not granted
+        ) as waiting`);
+        waiting = rows[0]?.waiting === true;
+        if (!waiting) await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+      expect(settled).toBe(false);
+    } finally {
+      release();
+      await cleanup;
+    }
+    const outcome = await update;
+    if (kind === "new binding") {
+      expect(outcome.error?.message).toContain("closed");
+      expect((await db.select().from(issues).where(eq(issues.id, target.id)))[0].executionWorkspaceId).toBeNull();
+    } else {
+      // Existing archived bindings still use the established reopen/rebuild path.
+      expect(outcome.error).toBeNull();
+      expect((await db.select().from(issues).where(eq(issues.id, target.id)))[0].status).toBe("todo");
+    }
   });
 
   it("exposes recovery through the authorized task API without starting a run", async () => {

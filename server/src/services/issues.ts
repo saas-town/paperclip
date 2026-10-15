@@ -11101,6 +11101,16 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        // Legacy PATCH writes share the destruction fence with explicit workspace
+        // selection. Validate against the row-locked binding, not the earlier read.
+        const lockedWorkspaceId = issueData.executionWorkspaceId !== undefined
+          ? issueData.executionWorkspaceId : receiptExisting.executionWorkspaceId;
+        if (lockedWorkspaceId && (patch.status !== undefined || issueData.executionWorkspaceId !== undefined ||
+            issueData.projectWorkspaceId !== undefined || issueData.executionWorkspacePreference !== undefined ||
+            issueData.executionWorkspaceSettings !== undefined)) {
+          await assertValidExecutionWorkspace(receiptExisting.companyId, null, lockedWorkspaceId, tx,
+            lockedWorkspaceId === receiptExisting.executionWorkspaceId);
+        }
         if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
             issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
           Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
