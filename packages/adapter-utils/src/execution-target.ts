@@ -271,6 +271,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
   cleanupWorkspaceSnapshot?(): Promise<void>;
+  cleanupRemoteWorkspace?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -1512,6 +1513,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       // reports a per-project staging failure.
       additionalSourceFailures: [],
       workspaceSyncSnapshot: null,
+      cleanupRemoteWorkspace: prepared.cleanupRemoteWorkspace,
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
