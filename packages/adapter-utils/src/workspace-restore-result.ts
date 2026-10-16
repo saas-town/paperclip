@@ -3,22 +3,21 @@ import type { AdapterExecutionResult } from "./types.js";
 import { classifyWorkspaceRestoreFailure } from "./workspace-restore-merge.js";
 import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnosticCapture } from "./workspace-restore-diagnostics.js";
 
-/** A terminal provider result that is safe to discard after restore succeeds. */
+/** Provider outcome is independent of the explicit stop and copy-back receipts. */
 export function canDiscardRestoredRunWorkspace(result: AdapterExecutionResult | null): boolean {
-  return result !== null && result.exitCode === 0 && result.signal === null && !result.timedOut
-    && !result.errorCode && !result.errorMessage && !hasWorkspaceRestoreFailure(result.resultJson);
+  return !hasWorkspaceRestoreFailure(result?.resultJson);
 }
 
-/** Call only after workspace and asset restore completed without throwing. */
+/** Delete only after stop, collection, and all workspace/asset restore receipts. */
 export async function cleanupRestoredRunWorkspace(input: {
   cleanup: (() => Promise<void>) | null | undefined;
   result: AdapterExecutionResult | null;
   providerStopped: boolean;
   collectionSucceeded: boolean;
-  cancelled: boolean;
+  workspaceRestored: boolean;
   onFailure: () => Promise<void> | void;
 }): Promise<void> {
-  if (!input.cleanup || !input.providerStopped || !input.collectionSucceeded || input.cancelled ||
+  if (!input.cleanup || !input.providerStopped || !input.collectionSucceeded || !input.workspaceRestored ||
       !canDiscardRestoredRunWorkspace(input.result)) return;
   try {
     await input.cleanup();

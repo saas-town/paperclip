@@ -746,6 +746,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let completedResult: AdapterExecutionResult | null = null;
   let providerCollectionSucceeded = false;
+  let workspaceRestored = false;
   try {
     const initial = await runAttempt(sessionId);
     if (
@@ -770,7 +771,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } finally {
       await Promise.all([
         paperclipBridge?.stop(),
-        restoreRemoteWorkspace?.(),
+        restoreRemoteWorkspace?.().then(() => { workspaceRestored = true; }),
         localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
       ]);
       await cleanupRestoredRunWorkspace({
@@ -778,7 +779,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         result: completedResult,
         providerStopped: providerStop.hasStopped(),
         collectionSucceeded: providerCollectionSucceeded,
-        cancelled: Boolean(ctx.signal?.aborted),
+        workspaceRestored,
         onFailure: () => onLog("stderr", "[paperclip] SSH run workspace cleanup failed; retained for recovery.\n"),
       });
     }

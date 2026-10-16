@@ -894,6 +894,7 @@ describe("grok_local execute", () => {
       delete process.env.XAI_API_KEY;
       mocks.state.isRemote = true;
       await seedHostGrokAuth("{}");
+      const cleanupRemoteWorkspace = vi.fn(async () => {});
       const collectionError = new Error("instruction collection failed");
       const order: string[] = [];
       let stagedDir = "";
@@ -907,6 +908,7 @@ describe("grok_local execute", () => {
           workspaceRemoteDir: "/remote/workspace",
           assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
           restoreWorkspace: async () => { order.push("restore"); },
+          cleanupRemoteWorkspace,
         };
       });
       const ctx = await makeCtx("run-collection-reject", await makeTempRoot());
@@ -916,6 +918,7 @@ describe("grok_local execute", () => {
       expect(result.resultJson?.instructionCollectionFailure).toBe("collection_failed");
       expect(result.resultJson?.workspaceRestoreFailure).toBeUndefined();
       expect(order).toEqual(["collect", "restore"]);
+      expect(cleanupRemoteWorkspace).not.toHaveBeenCalled();
       expect(stagedDir).not.toBe("");
       expect(await pathExists(stagedDir)).toBe(false);
     });
