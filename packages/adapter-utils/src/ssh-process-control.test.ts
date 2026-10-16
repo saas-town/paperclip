@@ -117,7 +117,13 @@ describe("SSH owned process group stop proof", () => {
     expect(await f.closed, f.stderr()).toEqual({ code: 0, signal: null });
     const directory = path.join(f.root, ".paperclip-runtime", "runs", runId, "ssh-processes");
     const receiptName = (await fs.readdir(directory)).find(name => name.endsWith(".receipt"))!;
-    await fs.writeFile(path.join(directory, receiptName), JSON.stringify({ body: "forged", signature: "0".repeat(64) }));
+    const receiptPath = path.join(directory, receiptName);
+    const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    // A correct body must not authorize deletion with an invalid signature.
+    await fs.writeFile(receiptPath, JSON.stringify({ ...receipt, signature: "0".repeat(64) }));
+    expect(await f.control.confirmStopped()).toBe(false);
+    // Neither may a live control endpoint claim stop without valid proof.
+    vi.mocked(runSshCommand).mockResolvedValueOnce({ stdout: JSON.stringify({ stopped: true, signature: "0".repeat(64) }), stderr: "" });
     expect(await f.control.confirmStopped()).toBe(false);
     vi.mocked(runSshCommand).mockRejectedValueOnce(new Error("offline"));
     expect(await f.control.confirmStopped()).toBe(false);
