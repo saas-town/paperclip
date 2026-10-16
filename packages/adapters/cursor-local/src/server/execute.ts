@@ -792,6 +792,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let completedResult: AdapterExecutionResult | null = null;
   let providerCollectionSucceeded = false;
+  let workspaceRestored = false;
   try {
     const initial = await runAttempt(sessionId);
     if (
@@ -822,13 +823,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
         );
         await restoreRemoteWorkspace();
+        workspaceRestored = true;
       }
       await cleanupRestoredRunWorkspace({
         cleanup: cleanupRemoteWorkspace,
         result: completedResult,
         providerStopped: providerStop.hasStopped(),
         collectionSucceeded: providerCollectionSucceeded,
-        cancelled: Boolean(ctx.signal?.aborted),
+        workspaceRestored,
         onFailure: () => onLog("stderr", "[paperclip] SSH run workspace cleanup failed; retained for recovery.\n"),
       });
       if (localSkillsDir) {

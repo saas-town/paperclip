@@ -63,6 +63,14 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
   };
 });
 
+vi.mock("@paperclipai/adapter-utils/ssh-process-control", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/ssh-process-control")>();
+  return { ...actual, prepareSshProcessControl: (input: Parameters<typeof actual.prepareSshProcessControl>[0]) => {
+    if (!actual.prepareSshProcessControl(input)) return null;
+    return { command: input.command, args: input.args, confirmStopped: async () => true };
+  } };
+});
+
 vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
     "@paperclipai/adapter-utils/execution-target",
@@ -88,12 +96,14 @@ describe("codex remote execution", () => {
     }
   });
 
-  it("prepares the workspace, syncs CODEX_HOME, and restores workspace changes for remote SSH execution", async () => {
+  it.each([false, true])("preserves failed provider work when copy-back fails: %s", async (restoreFails) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const codexHomeDir = path.join(rootDir, "codex-home");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const managedRemoteWorkspace = `/remote/workspace/.paperclip-runtime/runs/${runId}/workspace`;
+    if (restoreFails) restoreWorkspaceFromSshExecution.mockRejectedValueOnce(new Error("copy-back failed"));
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(codexHomeDir, { recursive: true });
     await writeFile(path.join(rootDir, "instructions.md"), "Use the remote workspace.\n", "utf8");
@@ -102,7 +112,7 @@ describe("codex remote execution", () => {
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
     await execute({
-      runId: "run-1",
+      runId,
       agent: {
         id: "agent-1",
         companyId: "company-1",
@@ -214,6 +224,8 @@ describe("codex remote execution", () => {
       localDir: workspaceDir,
       remoteDir: managedRemoteWorkspace,
     }));
+    const cleanupCalled = runSshCommand.mock.calls.some((args: unknown[]) => String(args[1]).includes(`rm -rf -- '${runId}'`));
+    expect(cleanupCalled).toBe(!restoreFails);
   });
 
   it("stages only the allowlist into the home asset: keeps config.toml/skills/auth, drops session+sqlite state, no exclude", async () => {

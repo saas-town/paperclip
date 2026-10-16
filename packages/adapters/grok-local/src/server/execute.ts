@@ -734,8 +734,11 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     return toResult(initial, missingManagedSession);
   };
 
+  let restoredResult: AdapterExecutionResult | null = null;
+  let providerCollectionSucceeded = false;
+  let workspaceRestored = false;
   try {
-    const restoredResult = await withWorkspaceRestore(
+    restoredResult = await withWorkspaceRestore(
       async () => {
         let result: AdapterExecutionResult;
         let collectionFailed = false;
@@ -745,6 +748,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         } finally {
           try {
             await providerStop.collectBeforeRestore();
+            providerCollectionSucceeded = true;
           } catch {
             collectionFailed = true;
             await onLog("stderr", `[paperclip] ${collectionFailureMessage}\n`).catch(() => undefined);
@@ -760,18 +764,23 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
           resultJson: { ...result.resultJson, instructionCollectionFailure: "collection_failed" },
         };
       },
-      async () => { await restoreRemoteWorkspace?.(); },
+      async () => {
+        if (restoreRemoteWorkspace) {
+          await restoreRemoteWorkspace();
+          workspaceRestored = true;
+        }
+      },
     );
+    return restoredResult;
+  } finally {
     await cleanupRestoredRunWorkspace({
       cleanup: grokAuthCopyBackFailed ? undefined : cleanupRemoteWorkspace,
       result: restoredResult,
       providerStopped: providerStop.hasStopped(),
-      collectionSucceeded: true,
-      cancelled: Boolean(ctx.signal?.aborted),
+      collectionSucceeded: providerCollectionSucceeded,
+      workspaceRestored,
       onFailure: () => onLog("stderr", "[paperclip] SSH run workspace cleanup failed; retained for recovery.\n"),
     });
-    return restoredResult;
-  } finally {
     // Cleanup runs after settlement on both success and failure.
     if (stagedGrokHomeDir) {
       await fs.rm(stagedGrokHomeDir, { recursive: true, force: true }).catch(async (error) => {

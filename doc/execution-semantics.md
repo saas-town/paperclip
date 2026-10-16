@@ -259,10 +259,25 @@ owned by the sandbox image.
 
 An SSH run stages its files under `.paperclip-runtime/runs/<run UUID>` in the
 configured remote workspace. Paperclip removes that run directory after the
-provider stops and workspace and asset restore succeed. A failed or cancelled
-run, or a failed restore, keeps its directory for recovery. A cleanup failure
-is logged and does not replace the run result. Cleanup removes only the exact
-run UUID beneath the configured workspace root.
+provider stops, instruction collection succeeds, and workspace and asset restore succeed.
+These receipts permit cleanup after failure, cancellation, timeout, or server shutdown.
+A failed restore or missing receipt keeps the directory for recovery.
+A cleanup failure is logged and does not replace the run result.
+Cleanup removes only the exact run UUID beneath the configured workspace root.
+
+Managed SSH runs use a Node supervisor with an owned process group.
+The supervisor sends SIGINT, then SIGKILL after a bounded grace period.
+It confirms group absence before it records a signed stop receipt.
+Each receipt binds one run and one process invocation.
+Paperclip verifies that receipt through a separate SSH command, even after a clean exit.
+Lost SSH access, invalid receipts, and an unexpected group leader exit retain the directory.
+Control files stay beside the copied workspace, outside its source files.
+
+The stop boundary covers the owned process group, as local process termination does.
+Commands that create independent sessions require their own cancellation support.
+SIGINT gives the provider time to cancel those tool sessions before escalation.
+A forced host kill or an interrupted copy-back can still require recovery.
+These cases retain their source files.
 
 ### Pre-dispatch configuration validation
 

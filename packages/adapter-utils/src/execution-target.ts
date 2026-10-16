@@ -81,6 +81,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
+import { prepareSshProcessControl } from "./ssh-process-control.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
@@ -921,25 +922,33 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
-  const result = await runChildProcess(runId, command, args, {
-    cwd: options.cwd,
-    env,
-    stdin: options.stdin,
-    timeoutSec: options.timeoutSec,
-    graceSec: options.graceSec,
-    onLog: options.onLog,
-    onSpawn: options.onSpawn,
-    terminalResultCleanup: options.terminalResultCleanup,
-    localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
-    remoteExecution: adapterExecutionTargetToRemoteSpec(target),
-  });
-  // Closing an SSH client on timeout/disconnect does not prove the remote
-  // provider exited. SSH status 255 is transport failure, never a stop receipt.
-  if (!target || target.kind === "local" ||
-      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
-    options.onProcessStopped?.();
+  const remoteSpec = adapterExecutionTargetToRemoteSpec(target);
+  const sshControl = remoteSpec ? prepareSshProcessControl({
+    runId, spec: remoteSpec, command, args, graceSec: options.graceSec,
+  }) : null;
+  try {
+    const result = await runChildProcess(runId, sshControl?.command ?? command, sshControl?.args ?? args, {
+      cwd: options.cwd,
+      env,
+      stdin: options.stdin,
+      timeoutSec: options.timeoutSec,
+      graceSec: options.graceSec,
+      onLog: options.onLog,
+      onSpawn: options.onSpawn,
+      terminalResultCleanup: options.terminalResultCleanup,
+      localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
+      remoteExecution: remoteSpec,
+    });
+    // Unmanaged SSH commands keep their existing conservative stop boundary.
+    // Managed runs require authenticated group-empty proof even on exit zero.
+    if (!sshControl && (!target || target.kind === "local" ||
+        (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255))) {
+      options.onProcessStopped?.();
+    }
+    return result;
+  } finally {
+    if (sshControl && await sshControl.confirmStopped()) options.onProcessStopped?.();
   }
-  return result;
 }
 
 export async function runAdapterExecutionTargetShellCommand(

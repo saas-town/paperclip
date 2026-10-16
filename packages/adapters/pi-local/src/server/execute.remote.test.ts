@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 const {
@@ -14,7 +15,7 @@ const {
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
+  runChildProcess: vi.fn(async (): Promise<RunProcessResult> => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -81,6 +82,15 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
   };
 });
 
+const { confirmSshStopped } = vi.hoisted(() => ({ confirmSshStopped: vi.fn(async () => true) }));
+vi.mock("@paperclipai/adapter-utils/ssh-process-control", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/ssh-process-control")>();
+  return { ...actual, prepareSshProcessControl: (input: Parameters<typeof actual.prepareSshProcessControl>[0]) => {
+    if (!actual.prepareSshProcessControl(input)) return null;
+    return { command: input.command, args: input.args, confirmStopped: confirmSshStopped };
+  } };
+});
+
 vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
     "@paperclipai/adapter-utils/execution-target",
@@ -115,7 +125,7 @@ describe("pi remote execution", () => {
     }
   });
 
-  it("prepares the workspace, syncs Pi skills, and restores workspace changes for remote SSH execution", async () => {
+  it.each(["success", "failed", "interrupted", "unknown-stop", "collection-failed", "restore-failed", "thrown"])("settles the managed SSH workspace after %s", async (state) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -125,7 +135,18 @@ describe("pi remote execution", () => {
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
-    const result = await execute({
+    const controller = new AbortController();
+    if (state === "interrupted") controller.abort();
+    if (state === "unknown-stop") confirmSshStopped.mockResolvedValueOnce(false);
+    if (state === "restore-failed") restoreWorkspaceFromSshExecution.mockRejectedValueOnce(new Error("copy-back failed"));
+    if (state === "thrown") runChildProcess.mockRejectedValueOnce(new Error("execution failed"));
+    if (state === "failed" || state === "interrupted") {
+      const original = await runChildProcess.getMockImplementation()!();
+      runChildProcess.mockResolvedValueOnce({ ...original, exitCode: 1, signal: state === "interrupted" ? "SIGTERM" : null });
+    }
+    const settlement = execute({
+      signal: controller.signal,
+      onProviderStopped: state === "collection-failed" ? async () => { throw new Error("collection failed"); } : undefined,
       runId,
       agent: {
         id: "agent-1",
@@ -179,6 +200,13 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     });
 
+    if (["collection-failed", "restore-failed", "thrown"].includes(state)) {
+      await expect(settlement).rejects.toThrow(state === "collection-failed" ? "collection failed" : state === "restore-failed" ? "copy-back failed" : "execution failed");
+      const cleanupCalled = runSshCommand.mock.calls.some((args: unknown[]) => String(args[1]).includes(`rm -rf -- '${runId}'`));
+      expect(cleanupCalled).toBe(state === "thrown");
+      return;
+    }
+    const result = await settlement;
     expect(result.sessionParams).toMatchObject({
       cwd: managedRemoteWorkspace,
       remoteExecution: {
@@ -228,6 +256,10 @@ describe("pi remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     const sshCalls = runSshCommand.mock.calls as unknown as Array<[unknown, string]>;
     const cleanupIndex = sshCalls.findIndex(([, command]) => command.includes(`rm -rf -- '${runId}'`));
+    if (state === "unknown-stop") {
+      expect(cleanupIndex).toBe(-1);
+      return;
+    }
     expect(cleanupIndex).toBeGreaterThanOrEqual(0);
     expect(restoreWorkspaceFromSshExecution.mock.invocationCallOrder[0]).toBeLessThan(
       runSshCommand.mock.invocationCallOrder[cleanupIndex]!,
